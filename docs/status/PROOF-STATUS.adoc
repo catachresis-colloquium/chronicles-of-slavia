@@ -86,7 +86,7 @@ or domain-correctness claim.
 
 . The gated Idris2 terms typecheck without `believe_me`, `postulate`, or
   `assert_total` in the checked proof tree.
-. The gated Agda module compiles under `agda --safe`.
+. The gated Agda module compiles under `agda --safe --without-K --cubical-compatible`.
 . The gated Coq and Lean modules are accepted by their compilers.
 . `scripts/scan-dangerous.sh` finds none of the configured proof escape hatches.
 . The proof workflow runs rather than silently skipping missing provers.
