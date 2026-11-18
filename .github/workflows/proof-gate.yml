@@ -50,25 +50,44 @@ jobs:
         run: |
           echo "=== Installing apt-based provers ==="
           sudo apt-get update
-          sudo apt-get install -y agda agda-stdlib coq openjdk-17-jre-headless
-          # Ubuntu's agda-stdlib package ships ~2000 sources under
-          # /usr/share/agda-stdlib but NO .agda-lib metadata file at all
-          # (verified against the noble file list), so `import Data.Nat`
-          # fails with "Failed to find source of module Data.Nat" until the
-          # library is described and registered by hand:
-          STDLIB_DIR=/usr/share/agda-stdlib
-          [ -d "$STDLIB_DIR" ] || { echo "agda-stdlib dir missing" >&2; exit 1; }
-          printf 'name: standard-library\ninclude: .\n' | sudo tee "$STDLIB_DIR/standard-library.agda-lib" >/dev/null
-          mkdir -p "$HOME/.agda"
-          echo "$STDLIB_DIR/standard-library.agda-lib" >> "$HOME/.agda/libraries"
-          echo "standard-library" >> "$HOME/.agda/defaults"
-          # agda 2.6.3 writes interface files under <lib>/_build/<version>/,
-          # and /usr/share is root-owned — without this the check dies with
-          # "_build: createDirectory: permission denied".
-          sudo install -d -o "$(id -u)" -g "$(id -g)" "$STDLIB_DIR/_build"
+          # agda-stdlib is deliberately NOT installed from apt: its layout
+          # differs between runner images (noble ships no .agda-lib; resolute
+          # ships one with `include: src`). The previous step overwrote that
+          # manifest with `include: .`, which on resolute points Agda at a
+          # directory with no modules, so `import Data.Nat` failed with
+          # FileNotFound (run 42367240541). A pinned checkout is used instead.
+          sudo apt-get install -y agda coq openjdk-17-jre-headless
           echo "agda:  $(agda --version 2>&1 | head -1 || echo 'unknown')"
           echo "coq:   $(coqc --version 2>&1 | head -1 || echo 'unknown')"
           echo "java:  $(java --version 2>&1 | head -1 || echo 'unknown')"
+
+      - name: Install pinned Agda standard library (project-local registry)
+        run: |
+          set -euo pipefail
+          # Pinned agda-stdlib v2.3: the tag is checked against its commit, so
+          # a moved tag fails here instead of changing what the gate checks.
+          STDLIB_TAG=v2.3
+          STDLIB_COMMIT=8326c7475af1fa456ca04a0203c168d5d7ff842b
+          AGDA_ROOT="$RUNNER_TEMP/agda"
+          mkdir -p "$AGDA_ROOT/config"
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$STDLIB_TAG" \
+            https://github.com/agda/agda-stdlib.git "$AGDA_ROOT/agda-stdlib"
+          have="$(git -C "$AGDA_ROOT/agda-stdlib" rev-parse HEAD)"
+          [ "$have" = "$STDLIB_COMMIT" ] || { echo "::error::agda-stdlib $STDLIB_TAG is $have, expected $STDLIB_COMMIT"; exit 1; }
+          # scripts/check-proofs.sh runs `agda --safe <module>` itself, so the
+          # registry is handed over through AGDA_DIR (Agda's own variable)
+          # pointing at a runner-temp directory. Nothing under ~/.agda is read
+          # or written, and `defaults` is local to this directory.
+          printf '%s\n' "$AGDA_ROOT/agda-stdlib/standard-library.agda-lib" > "$AGDA_ROOT/config/libraries"
+          printf '%s\n' standard-library > "$AGDA_ROOT/config/defaults"
+          echo "AGDA_DIR=$AGDA_ROOT/config" >> "$GITHUB_ENV"
+          # Agda prints non-ASCII identifiers in its diagnostics; under a POSIX
+          # locale it dies with "commitBuffer: invalid argument" (exit 42)
+          # instead of reporting. Keep the caller's locale when it is UTF-8.
+          case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+            *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) ;;
+            *) echo "LC_ALL=C.UTF-8" >> "$GITHUB_ENV" ;;
+          esac
 
       - name: Install Lean 4 via elan
         run: |
