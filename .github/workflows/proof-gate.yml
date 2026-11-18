@@ -64,21 +64,19 @@ jobs:
       - name: Install pinned Agda standard library (project-local registry)
         run: |
           set -euo pipefail
-          # Pinned agda-stdlib v2.3: the tag is checked against its commit, so
-          # a moved tag fails here instead of changing what the gate checks.
-          STDLIB_TAG=v2.3
-          STDLIB_COMMIT=8326c7475af1fa456ca04a0203c168d5d7ff842b
+          # Shared pinned provisioning script, copied byte-identically from
+          # hyperpolymath/rsr-template-repo scripts/provision-agda-stdlib.sh
+          # (template commit 4a72fe74b83593dd636d9535154bf16060005221): clones
+          # agda-stdlib v2.3, checks the tag against its commit, prints the Agda
+          # version and fails when Agda is older than 2.7.0.
           AGDA_ROOT="$RUNNER_TEMP/agda"
           mkdir -p "$AGDA_ROOT/config"
-          git -c advice.detachedHead=false clone -q --depth 1 --branch "$STDLIB_TAG" \
-            https://github.com/agda/agda-stdlib.git "$AGDA_ROOT/agda-stdlib"
-          have="$(git -C "$AGDA_ROOT/agda-stdlib" rev-parse HEAD)"
-          [ "$have" = "$STDLIB_COMMIT" ] || { echo "::error::agda-stdlib $STDLIB_TAG is $have, expected $STDLIB_COMMIT"; exit 1; }
+          libs="$(bash scripts/provision-agda-stdlib.sh "$AGDA_ROOT/agda-stdlib")"
           # scripts/check-proofs.sh runs `agda --safe <module>` itself, so the
           # registry is handed over through AGDA_DIR (Agda's own variable)
           # pointing at a runner-temp directory. Nothing under ~/.agda is read
           # or written, and `defaults` is local to this directory.
-          printf '%s\n' "$AGDA_ROOT/agda-stdlib/standard-library.agda-lib" > "$AGDA_ROOT/config/libraries"
+          cp "$libs" "$AGDA_ROOT/config/libraries"
           printf '%s\n' standard-library > "$AGDA_ROOT/config/defaults"
           echo "AGDA_DIR=$AGDA_ROOT/config" >> "$GITHUB_ENV"
           # Agda prints non-ASCII identifiers in its diagnostics; under a POSIX
