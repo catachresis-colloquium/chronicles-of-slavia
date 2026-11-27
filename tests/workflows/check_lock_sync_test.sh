@@ -518,6 +518,73 @@ test_repository_lockfile_is_synchronised() {
     expect_pass "$REPO_ROOT/.github/workflows"
 }
 
+test_shared_reusable_pin_is_listed_for_each_caller() {
+    new_fixture shared-reusable-pin
+    local pin=0123456789abcdef0123456789abcdef01234567
+    local caller
+    for caller in scan mirror; do
+        cat > "$FIXTURE/$caller.yml" <<YAML
+jobs:
+  call:
+    uses: example/standards/.github/workflows/$caller.yml@$pin
+YAML
+    done
+
+    # A refresh can drop a caller's per-path entry while retaining the shared
+    # dependency via another caller. A valid dependency record alone is not enough.
+    cat > "$FIXTURE/actions.lock" <<YAML
+version: 'v0.0.3'
+workflows:
+    '.github/workflows/scan.yml':
+        - 'example/standards@$pin'
+    '.github/workflows/mirror.yml': []
+dependencies:
+    'example/standards@$pin':
+        ref: '$pin'
+        commit: 'sha1-$pin'
+YAML
+    expect_failure_containing "$FIXTURE" \
+        "refs missing from the lockfile: example/standards@$pin" || return 1
+    [[ "$LAST_OUTPUT" == *"FAIL .github/workflows/mirror.yml"* ]] || return 1
+
+    sed -i "/mirror\.yml/s/: \[\]/:\n        - 'example\/standards@$pin'/" \
+        "$FIXTURE/actions.lock" || return 1
+    expect_pass "$FIXTURE"
+}
+
+test_repository_ref_updates_have_immutable_lock_commits() {
+    local workflow_dir="$REPO_ROOT/.github/workflows"
+    # The sync check verifies dependency keys, but a matching key without an
+    # immutable commit cannot pin the symbolic refs introduced by a refresh.
+    gawk '
+        ARGIND == 1 {
+            if ($0 == "dependencies:") { in_dependencies = 1; next }
+            if (!in_dependencies) next
+            if (match($0, /^    \047([^\047@]+)@([^\047]+)\047:/, field)) {
+                key = tolower(field[1]) "@" field[2]
+            } else if (match($0, /^        commit: \047([^\047]+)\047$/, field)) {
+                commits[key] = field[1]
+            }
+            next
+        }
+        match($0, /^[[:space:]]*-[[:space:]]+uses:[[:space:]]+["\047]?([^"\047@[:space:]]+)@([^"\047[:space:]]+)/, field) {
+            split(field[1], path, "/")
+            repo = tolower(path[1] "/" path[2])
+            if (repo !~ /^(actions\/checkout|github\/codeql-action|dtolnay\/rust-toolchain)$/) next
+            ref = field[2]
+            key = repo "@" ref
+            commit = commits[key]
+            if (commit !~ /^sha1-[0-9a-f]{40}$/ ||
+                (ref ~ /^[0-9a-f]{40}$/ && commit != "sha1-" ref)) {
+                printf "%s:%d: %s needs a valid locked commit (found %s)\n", FILENAME, FNR, key, commit > "/dev/stderr"
+                failed = 1
+            }
+        }
+        END { exit failed }
+    ' "$workflow_dir/actions.lock" \
+        "$workflow_dir/codeql.yml" "$workflow_dir/e2e.yml" "$workflow_dir/oikosbot.yml"
+}
+
 test_gate_remains_self_protecting_and_wired() {
     if [ ! -f "$GATE_WORKFLOW" ]; then
         printf 'gate workflow is missing: %s\n' "$GATE_WORKFLOW" >&2
@@ -572,6 +639,10 @@ run_test "rejects dollar-prefixed local-action references with refs" \
 run_test "allows an unreferenced dependency record with a note" \
     test_allows_unreferenced_dependency_record
 run_test "fails closed when GNU awk is unavailable" test_fails_closed_without_gnu_awk
+run_test "requires a shared reusable pin under each caller's lock entry" \
+    test_shared_reusable_pin_is_listed_for_each_caller
+run_test "resolves updated action refs to immutable lock commits" \
+    test_repository_ref_updates_have_immutable_lock_commits
 run_test "accepts the repository's current lockfile" test_repository_lockfile_is_synchronised
 run_test "keeps the gate self-protecting and wired" test_gate_remains_self_protecting_and_wired
 
